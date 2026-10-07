@@ -792,7 +792,7 @@ After=teslausb-cn-web.service
 
 [Service]
 Type=oneshot
-ExecStart=$REPO_DIR/scripts/present_usb.sh
+ExecStart=$REPO_DIR/scripts/boot_present.sh
 RemainAfterExit=yes
 
 [Install]

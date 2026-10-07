@@ -17,12 +17,12 @@
   <h2>{{ _('storage') }}</h2>
   {% set tc = storage.teslacam %}
   <div class="row"><span>{{ _('partition_teslacam') }}</span>
-    <span class="muted">{{ _('used_of_total', used=tc.used_gb, total=tc.total_gb) }}G</span></div>
-  <div class="bar"><i style="width:{{ (tc.used_gb / tc.total_gb * 100) | round(1) }}%"></i></div>
+    <span class="muted">{% if tc.total_gb %}{{ _('used_of_total', used=tc.used_gb, total=tc.total_gb) }}G{% else %}{{ _('storage_unmounted') }}{% endif %}</span></div>
+  {% if tc.total_gb %}<div class="bar"><i style="width:{{ (tc.used_gb / tc.total_gb * 100) | round(1) }}%"></i></div>{% endif %}
   {% set ls = storage.lightshow %}
   <div class="row" style="margin-top:10px"><span>{{ _('partition_lightshow') }}</span>
-    <span class="muted">{{ _('used_of_total', used=ls.used_gb, total=ls.total_gb) }}G</span></div>
-  <div class="bar green"><i style="width:{{ (ls.used_gb / ls.total_gb * 100) | round(1) }}%"></i></div>
+    <span class="muted">{% if ls.total_gb %}{{ _('used_of_total', used=ls.used_gb, total=ls.total_gb) }}G{% else %}{{ _('storage_unmounted') }}{% endif %}</span></div>
+  {% if ls.total_gb %}<div class="bar green"><i style="width:{{ (ls.used_gb / ls.total_gb * 100) | round(1) }}%"></i></div>{% endif %}
 </div>
 
 <div class="card">
