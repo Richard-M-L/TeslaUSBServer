@@ -1,0 +1,47 @@
+# TeslaUSB-CN 集中配置
+# 安装脚本与 Web 应用共同读取本文件
+
+# 车机时区（用于视频时间显示，不依赖系统时区）
+tesla_timezone: "Asia/Shanghai"
+
+# 镜像源：auto（交互选择）/ tsinghua / ustc / aliyun / off
+mirror: "auto"
+
+# USB 分区
+partitions:
+  teslacam_size: "400G"     # TeslaCam 分区（exFAT，行车记录/哨兵）
+  lightshow_size: "20G"     # LightShow 分区（FAT32，灯光秀/锁车提示音）
+  music_size: "0"           # Music 分区，0 表示不创建
+
+# 网络
+network:
+  mode: "client"            # client（连家里 WiFi，默认）/ ap（热点 fallback）
+  mdns_name: "teslausb"     # teslausb.local
+
+# 备份
+backup:
+  enabled: false
+  protocol: "smb"           # smb / nfs / sftp / webdav
+  host: ""
+  port: 445
+  username: ""
+  # 密码通过 Web 界面设置，加密存储，不落明文
+  delete_after_backup: false # 备份成功后自动删除本地视频（危险操作，默认关）
+
+# 自动清理（按文件夹）
+cleanup:
+  run_on_boot: false
+  recentclips_retention_days: 7
+  savedclips_retention_days: 0    # 0 表示不自动清理
+  sentryclips_retention_days: 30
+  protect_last_hour: true         # 1 小时内的视频永不删除
+
+# 能耗与散热
+power:
+  cpu_governor: "ondemand"
+  max_freq_mhz: 1000             # Zero 2W 降频上限
+  temp_fuse_c: 70               # 超过则暂停后台任务
+  disable_hdmi: true
+  disable_led: true
+  disable_bluetooth: true
+  wifi_powersave_off: true
