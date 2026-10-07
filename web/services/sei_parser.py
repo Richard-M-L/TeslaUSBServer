@@ -1,0 +1,695 @@
+"""特斯拉行车记录仪 MP4 的 SEI 遥测解析器（mmap 低内存版）。
+
+来源与取舍
+----------
+- 移植来源：TeslaUSB-CN 上游 fork（``~/workspace/teslausb-cn-review``）
+  的 ``scripts/web/services/sei_parser.py``（1182 行）。
+- 保留（纯解析能力）：``SeiMessage``（含 ``has_movement``，基于车速 /
+  挡位 / Autopilot 的移动检测——国行视频无 GPS 遥测时仍可用）、
+  ``extract_sei_messages``、``parse_video_sei``，以及它们依赖的全部
+  私有辅助函数（``_find_box`` 系列、``_strip_emulation_prevention_bytes``、
+  ``_decode_sei_nal``、``_get_timescale_and_durations``）和
+  ``extract_mvhd_creation_time``（纯 mvhd 读数，返回 UTC aware datetime，
+  上层用 ``web.services.tzutil.epoch_to_car`` 转车机本地时间）。
+- 删掉（与归档管线 / 索引器强耦合）：sidecar JSON 缓存整套
+  （``SeiSidecar``、``sidecar_path_for``、``write/read/delete_sei_sidecar``、
+  ``get_video_gps_summary``）；需要缓存时由上层（索引 / 归档）自行实现。
+- 改编：
+  1. protobuf 导入改为包内相对导入（新包 ``web.services``）；
+  2. auto-compile 的 proto 路径改为本目录的 ``../static/dashcam.proto``
+     （即仓库 ``web/static/dashcam.proto``），编译产物落到
+     ``web/services/dashcam_pb2.py``；
+  3. 无 protobuf 环境时不再抛 ``ImportError``：改为返回 ``None`` 并记
+     中文 warning，``extract_sei_messages`` 降级为空结果（详见
+     ``web/static/dashcam-proto-README.md``）。
+
+内存模型（上游 Phase 1 1.4 优化，原样保留）
+    字节遍历使用 ``mmap.mmap``（``ACCESS_READ``）而非 ``f.read()`` 全量
+    读入；内核按需分页 4 KB 并在内存压力下回收，解析 30-80 MB 录像时
+    常驻内存仅约 200 KB，适合 Pi Zero 2 W（512 MB 内存）。
+
+用法：
+    from web.services.sei_parser import extract_sei_messages, parse_video_sei
+
+    # 生成器（省内存）：
+    for msg in extract_sei_messages('/path/to/video.mp4', sample_rate=30):
+        print(f"帧 {msg.frame_index}: 速度={msg.speed_kph:.1f} km/h")
+
+    # 一次性取全：
+    messages = parse_video_sei('/path/to/video.mp4')
+"""
+import logging
+import mmap
+import os
+import struct
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Generator, List, Optional
+
+logger = logging.getLogger(__name__)
+
+# MP4/QuickTime epoch starts at 1904-01-01 UTC. Unix epoch starts at 1970-01-01.
+# Difference is 2082844800 seconds. Used to convert mvhd creation_time fields
+# (which are seconds since 1904 UTC) into ordinary Unix timestamps.
+_MP4_EPOCH_OFFSET = 2082844800
+
+# Lazy-load protobuf to avoid import cost when not needed
+_SeiMetadata = None
+
+
+def _get_sei_metadata_class():
+    """懒加载编译好的 protobuf 类，缺失时尝试从 proto 自动编译。
+
+    proto 源：本目录的 ``../static/dashcam.proto``
+    （即仓库 ``web/static/dashcam.proto``）；编译产物落到本目录
+    ``dashcam_pb2.py``（``protoc --python_out`` 生成，详见
+    ``web/static/dashcam-proto-README.md``）。
+
+    降级（与上游差异）：上游在 proto / protoc 缺失时抛 ``ImportError``；
+    本移植改为返回 ``None`` 并记一条中文 warning，不抛异常。调用方
+    （``extract_sei_messages``）据此降级为空结果，Pi 上不装 protoc 也能跑。
+    """
+    global _SeiMetadata
+    if _SeiMetadata is not None:
+        return _SeiMetadata
+
+    # 1) 已编译的模块（包内相对导入）
+    try:
+        from .dashcam_pb2 import SeiMetadata
+        _SeiMetadata = SeiMetadata
+        return _SeiMetadata
+    except ImportError:
+        pass
+
+    # 2) auto-compile：从 web/static/dashcam.proto 编译
+    services_dir = os.path.dirname(os.path.abspath(__file__))
+    proto_src = os.path.normpath(
+        os.path.join(services_dir, '..', 'static', 'dashcam.proto'))
+
+    if not os.path.isfile(proto_src):
+        logger.warning(
+            "缺少 protobuf 解析能力：dashcam_pb2.py 不存在且 proto 源缺失（%s），"
+            "SEI 解析将降级为空结果", proto_src)
+        return None
+
+    logger.warning("dashcam_pb2.py 缺失，尝试用 protoc 从 dashcam.proto 自动编译")
+    import subprocess
+    try:
+        subprocess.run(
+            ['protoc', f'--python_out={services_dir}',
+             f'--proto_path={os.path.dirname(proto_src)}',
+             proto_src],
+            check=True, capture_output=True, text=True,
+        )
+        logger.info("dashcam_pb2.py 自动编译成功")
+    except FileNotFoundError:
+        logger.warning(
+            "缺少 protobuf 解析能力：未安装 protoc（protobuf-compiler），"
+            "SEI 解析将降级为空结果")
+        return None
+    except subprocess.CalledProcessError as e:
+        logger.warning(
+            "缺少 protobuf 解析能力：dashcam.proto 编译失败（%s），"
+            "SEI 解析将降级为空结果", (e.stderr or e.stdout or "").strip())
+        return None
+
+    try:
+        from .dashcam_pb2 import SeiMetadata
+    except ImportError:
+        logger.warning(
+            "缺少 protobuf 解析能力：编译后仍无法导入 dashcam_pb2，"
+            "SEI 解析将降级为空结果")
+        return None
+    _SeiMetadata = SeiMetadata
+    return _SeiMetadata
+
+
+# --- Data classes for parsed results ---
+
+@dataclass
+class SeiMessage:
+    """Parsed SEI telemetry from a single video frame."""
+    frame_index: int
+    timestamp_ms: float
+    # GPS
+    latitude_deg: float
+    longitude_deg: float
+    heading_deg: float
+    # Motion
+    vehicle_speed_mps: float
+    linear_acceleration_x: float
+    linear_acceleration_y: float
+    linear_acceleration_z: float
+    # Controls
+    steering_wheel_angle: float
+    accelerator_pedal_position: float
+    brake_applied: bool
+    # State
+    gear_state: str  # 'PARK', 'DRIVE', 'REVERSE', 'NEUTRAL'
+    autopilot_state: str  # 'NONE', 'SELF_DRIVING', 'AUTOSTEER', 'TACC'
+    blinker_on_left: bool
+    blinker_on_right: bool
+    # Raw
+    frame_seq_no: int
+    video_path: str
+
+    @property
+    def has_coordinates(self) -> bool:
+        """该消息是否携带有效坐标（经纬度非 0）。"""
+        return (self.latitude_deg != 0.0 or self.longitude_deg != 0.0)
+
+    @property
+    def has_movement(self) -> bool:
+        """Check if this message indicates the vehicle is moving/driving.
+
+        Uses telemetry signals so it works in regions where Tesla does not
+        record GPS coordinates in dashcam video SEI metadata (e.g. China).
+        Primary indicators: speed above parking creep, drive gear engaged,
+        or Autopilot active (FSD/TACC/Autosteer all imply the vehicle is
+        in motion).
+        """
+        if self.vehicle_speed_mps > 0.5:
+            return True
+        if self.gear_state in ('DRIVE', 'REVERSE'):
+            return True
+        if self.autopilot_state != 'NONE':
+            return True
+        return False
+
+    @property
+    def speed_mph(self) -> float:
+        """Speed in miles per hour."""
+        return abs(self.vehicle_speed_mps) * 2.23694
+
+    @property
+    def speed_kph(self) -> float:
+        """Speed in kilometers per hour."""
+        return abs(self.vehicle_speed_mps) * 3.6
+
+
+# Gear and autopilot enum mappings (match dashcam.proto)
+_GEAR_NAMES = {0: 'PARK', 1: 'DRIVE', 2: 'REVERSE', 3: 'NEUTRAL'}
+_AUTOPILOT_NAMES = {0: 'NONE', 1: 'SELF_DRIVING', 2: 'AUTOSTEER', 3: 'TACC'}
+
+
+# --- MP4 Box Parsing ---
+
+def _find_box(data: bytes, start: int, end: int, name: str) -> Optional[dict]:
+    """Find an MP4 box by 4-char name within a byte range.
+
+    Returns dict with 'start' (content start), 'end', 'size' (content size),
+    or None if not found.
+    """
+    pos = start
+    name_bytes = name.encode('ascii')
+
+    while pos + 8 <= end:
+        size = struct.unpack('>I', data[pos:pos + 4])[0]
+        box_type = data[pos + 4:pos + 8]
+
+        if size == 1:
+            # Extended size (64-bit)
+            if pos + 16 > end:
+                break
+            size = struct.unpack('>Q', data[pos + 8:pos + 16])[0]
+            header_size = 16
+        elif size == 0:
+            # Box extends to end of data
+            size = end - pos
+            header_size = 8
+        else:
+            header_size = 8
+
+        if size < header_size:
+            break
+
+        # Clamp box to actual data bounds (malicious files may claim larger)
+        if pos + size > end:
+            # If this is the box we're looking for, clamp its size
+            if box_type == name_bytes:
+                size = end - pos
+            else:
+                break
+
+        if box_type == name_bytes:
+            return {
+                'start': pos + header_size,
+                'end': pos + size,
+                'size': size - header_size
+            }
+
+        pos += size
+
+    return None
+
+
+def _find_box_required(data: bytes, start: int, end: int, name: str) -> dict:
+    """Find an MP4 box, raising ValueError if not found."""
+    box = _find_box(data, start, end, name)
+    if box is None:
+        raise ValueError(f'MP4 box "{name}" not found')
+    return box
+
+
+def extract_mvhd_creation_time(video_path: str) -> Optional[datetime]:
+    """Return the UTC start-of-recording time from an MP4's ``mvhd`` atom.
+
+    The MP4 ``moov``/``mvhd`` (Movie Header) atom carries a 32- or 64-bit
+    ``creation_time`` field, defined by the MP4 / QuickTime spec as
+    "seconds since 1904-01-01 UTC". Tesla writes this with the actual
+    GPS-derived UTC start-of-recording time, **independent** of the
+    car's onboard local clock. This makes it the authoritative source
+    of truth for "when did this clip actually start" — and is the only
+    way to get a correct date when Tesla's onboard clock is glitched
+    (filename uses local-clock time and goes wrong by hours/days when
+    the car loses time sync).
+
+    Why mvhd and not the per-frame SEI ``timestamp_ms``? SEI
+    ``timestamp_ms`` is a frame OFFSET within the clip (~0..60000 ms),
+    not an absolute UTC time. Tesla's SEI does not carry absolute UTC
+    in any per-frame message we have ever observed.
+
+    Returns:
+        Timezone-aware ``datetime`` in UTC on success, or ``None`` if
+        the file is missing, too small, lacks a usable ``mvhd``
+        creation_time, or its creation_time is zero / nonsensical
+        (some pre-2010 firmware).
+
+    调用方决定如何展示时间。在 TeslaUSB-CN 中一律通过
+    ``web.services.tzutil.epoch_to_car()`` 转为车机本地时间，
+    禁止转成 naive 本地时间（时区 P0 规范）。
+    """
+    try:
+        if not os.path.isfile(video_path):
+            return None
+        size = os.path.getsize(video_path)
+        if size < 8:
+            return None
+    except OSError as e:
+        logger.debug("mvhd: cannot stat %s: %s", video_path, e)
+        return None
+
+    f = None
+    mmap_obj = None
+    try:
+        f = open(video_path, 'rb')
+        try:
+            data = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+            mmap_obj = data
+        except (ValueError, OSError):
+            f.seek(0)
+            data = f.read()
+
+        moov = _find_box(data, 0, len(data), 'moov')
+        if moov is None:
+            logger.debug("mvhd: no moov box in %s", video_path)
+            return None
+        mvhd = _find_box(data, moov['start'], moov['end'], 'mvhd')
+        if mvhd is None:
+            logger.debug("mvhd: no mvhd box in %s", video_path)
+            return None
+
+        # mvhd payload layout:
+        #   1 byte  version
+        #   3 bytes flags
+        #   if version==1:  64-bit creation_time, 64-bit modification_time
+        #   else:           32-bit creation_time, 32-bit modification_time
+        # All values are big-endian, MP4-epoch (seconds since 1904-01-01 UTC).
+        payload_start = mvhd['start']
+        if mvhd['size'] < 4:
+            return None
+        version = data[payload_start]
+        if version == 1:
+            need = 4 + 16
+            if mvhd['size'] < need:
+                return None
+            creation_time = struct.unpack(
+                '>Q', data[payload_start + 4:payload_start + 12]
+            )[0]
+        else:
+            need = 4 + 8
+            if mvhd['size'] < need:
+                return None
+            creation_time = struct.unpack(
+                '>I', data[payload_start + 4:payload_start + 8]
+            )[0]
+
+        # Reject obviously bogus values: zero (uninitialised) or any
+        # value before the MP4 epoch offset (would land before 1970,
+        # which Tesla does not produce).
+        if creation_time <= _MP4_EPOCH_OFFSET:
+            return None
+
+        unix_seconds = creation_time - _MP4_EPOCH_OFFSET
+        try:
+            return datetime.fromtimestamp(unix_seconds, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+    except Exception as e:
+        # Defensive: never let an mvhd read crash the indexer. The
+        # caller falls back to filename-derived time, so a None return
+        # here is fully recoverable.
+        logger.debug("mvhd: unexpected error reading %s: %s", video_path, e)
+        return None
+    finally:
+        if mmap_obj is not None:
+            try:
+                mmap_obj.close()
+            except Exception:
+                pass
+        if f is not None:
+            try:
+                f.close()
+            except Exception:
+                pass
+
+
+# --- H.264 NAL Unit Parsing ---
+
+def _strip_emulation_prevention_bytes(data: bytes) -> bytes:
+    """Remove H.264 emulation prevention bytes (0x03 after 0x0000).
+
+    H.264 inserts 0x03 bytes to prevent start code emulation (0x000001).
+    These must be removed before decoding the protobuf payload.
+    """
+    out = bytearray()
+    zeros = 0
+
+    for byte in data:
+        if zeros >= 2 and byte == 0x03:
+            zeros = 0
+            continue
+        out.append(byte)
+        zeros = zeros + 1 if byte == 0 else 0
+
+    return bytes(out)
+
+
+def _decode_sei_nal(nal_data: bytes) -> Optional[object]:
+    """Decode a SEI NAL unit to a protobuf SeiMetadata message.
+
+    Tesla SEI NAL structure:
+    - Bytes 0-2: NAL header + padding (0x42 bytes)
+    - Variable 0x42 padding bytes
+    - Payload type marker: 0x69
+    - Protobuf payload (with emulation prevention bytes)
+    - Trailing RBSP byte (0x80)
+    """
+    if len(nal_data) < 4:
+        return None
+
+    # Skip first 3 bytes, then skip 0x42 padding
+    i = 3
+    while i < len(nal_data) and nal_data[i] == 0x42:
+        i += 1
+
+    # Must have had at least one 0x42 padding byte, and next byte must be 0x69
+    if i <= 3 or i + 1 >= len(nal_data) or nal_data[i] != 0x69:
+        return None
+
+    try:
+        # Extract protobuf payload: after 0x69 marker, before trailing byte
+        payload = nal_data[i + 1:len(nal_data) - 1]
+        clean_payload = _strip_emulation_prevention_bytes(payload)
+
+        SeiMetadata = _get_sei_metadata_class()
+        if SeiMetadata is None:
+            # 无 protobuf 环境：降级，调用方返回空结果
+            return None
+        return SeiMetadata.FromString(clean_payload)
+    except Exception:
+        return None
+
+
+def _get_timescale_and_durations(data: bytes) -> tuple:
+    """Extract timescale and frame durations from MP4 moov box.
+
+    Returns (timescale, durations_ms_list).
+    """
+    moov = _find_box_required(data, 0, len(data), 'moov')
+    trak = _find_box_required(data, moov['start'], moov['end'], 'trak')
+    mdia = _find_box_required(data, trak['start'], trak['end'], 'mdia')
+
+    # Get timescale from mdhd box
+    mdhd = _find_box_required(data, mdia['start'], mdia['end'], 'mdhd')
+    mdhd_version = data[mdhd['start']]
+    if mdhd_version == 1:
+        timescale = struct.unpack('>I', data[mdhd['start'] + 20:mdhd['start'] + 24])[0]
+    else:
+        timescale = struct.unpack('>I', data[mdhd['start'] + 12:mdhd['start'] + 16])[0]
+
+    if timescale == 0:
+        timescale = 30000  # Fallback default
+
+    # Get frame durations from stts (Sample-to-Time box)
+    minf = _find_box_required(data, mdia['start'], mdia['end'], 'minf')
+    stbl = _find_box_required(data, minf['start'], minf['end'], 'stbl')
+    stts = _find_box_required(data, stbl['start'], stbl['end'], 'stts')
+
+    entry_count = struct.unpack('>I', data[stts['start'] + 4:stts['start'] + 8])[0]
+
+    # Sanity check: Tesla clips are ~30-60s at 30fps ≈ 1800 frames max.
+    # Allow generous headroom but prevent malicious values.
+    if entry_count > 50000:
+        logger.warning("Suspicious stts entry_count %d in video, using fallback", entry_count)
+        return timescale, []
+
+    MAX_TOTAL_SAMPLES = 10000  # Cap total samples to prevent memory exhaustion
+    durations = []
+    pos = stts['start'] + 8
+    for _ in range(entry_count):
+        if pos + 8 > stts['end']:
+            break
+        count = struct.unpack('>I', data[pos:pos + 4])[0]
+        delta = struct.unpack('>I', data[pos + 4:pos + 8])[0]
+        remaining = MAX_TOTAL_SAMPLES - len(durations)
+        if remaining <= 0:
+            logger.warning("stts total samples capped at %d", MAX_TOTAL_SAMPLES)
+            break
+        if count > remaining:
+            count = remaining
+        duration_ms = (delta / timescale) * 1000
+        durations.extend([duration_ms] * count)
+        pos += 8
+
+    return timescale, durations
+
+
+# --- Public API ---
+
+def extract_sei_messages(
+    video_path: str,
+    sample_rate: int = 1,
+    max_walk_bytes: Optional[int] = None,
+) -> Generator[SeiMessage, None, None]:
+    """Extract SEI telemetry messages from a Tesla dashcam MP4 file.
+
+    Generator-based for memory efficiency on Pi Zero 2 W. Reads the file
+    once and yields SeiMessage objects for frames that contain SEI data.
+
+    Args:
+        video_path: Path to the MP4 file.
+        sample_rate: Only process every Nth frame (1=all, 30=~1/sec at 30fps).
+            Use 1 for maximum resolution, 30 for route mapping.
+        max_walk_bytes: Optional hard cap on the number of bytes walked
+            inside the ``mdat`` box. When set, the generator stops after
+            the cumulative ``cursor`` advance through ``mdat`` exceeds
+            this many bytes. Use this for "is this clip stationary?"
+            peeks where the caller will break out on the first
+            GPS-bearing message anyway — capping the walk turns a
+            full-file mmap page-in (25-50 MB cold-cache I/O) into a
+            fixed-size read. Default ``None`` preserves the historical
+            walk-to-end behavior used by the indexer.
+
+    Yields:
+        SeiMessage objects with GPS, speed, acceleration, and control data.
+
+    Raises:
+        FileNotFoundError: If video_path doesn't exist.
+        ValueError: If the file is not a valid MP4 with H.264 video.
+    """
+    # 无 protobuf 环境降级：记中文 warning 并返回空结果，不抛异常
+    # （放文件校验之前，保证降级路径永远不抛异常）
+    if _get_sei_metadata_class() is None:
+        logger.warning(
+            "protobuf 不可用（未安装 protobuf 运行时且无法编译 dashcam.proto），"
+            "跳过 SEI 解析：%s", video_path)
+        return
+
+    if not os.path.isfile(video_path):
+        raise FileNotFoundError(f"Video file not found: {video_path}")
+
+    file_size = os.path.getsize(video_path)
+    if file_size < 8:
+        raise ValueError(f"File too small to be a valid MP4: {video_path}")
+
+    max_file_size = 150 * 1024 * 1024  # 150 MB
+    if file_size > max_file_size:
+        raise ValueError(
+            f"File too large ({file_size / 1024 / 1024:.0f} MB) — "
+            f"max {max_file_size // 1024 // 1024} MB: {video_path}"
+        )
+
+    # Phase 1 item 1.4 — memory-map the file instead of reading it into
+    # RAM. mmap supports slicing/indexing identically to bytes
+    # (data[i] -> int, data[a:b] -> bytes), so the byte-walking
+    # helpers below operate unchanged. The kernel pages individual
+    # 4 KB chunks in on demand and evicts under pressure, so a 60 MB
+    # clip never spikes RSS by 60 MB. Both the file descriptor and
+    # the mapping are released in the finally block — covers both
+    # normal generator exit and early generator close (GC /
+    # ``.close()``), which raise GeneratorExit at the yield point.
+    f = open(video_path, 'rb')
+    # Initialize mmap_obj BEFORE the try so that if mmap.mmap() raises
+    # an exception we did not anticipate (e.g. ``MemoryError`` — exactly
+    # the Pi Zero 2 W condition this rewrite was meant to mitigate),
+    # the ``finally`` block below still has a defined name to check.
+    # Without this guard the finally would raise ``NameError`` while
+    # also leaking the file descriptor — masking the original
+    # exception. Catching only (ValueError, OSError) is intentional;
+    # anything else (MemoryError, KeyboardInterrupt, etc.) MUST
+    # propagate, but we still need a clean teardown.
+    mmap_obj = None
+    try:
+        try:
+            data = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+        except (ValueError, OSError) as e:
+            # Empty file (already guarded above) or platform mmap
+            # limitation — fall back to f.read() so we never hard-fail
+            # on a clip that the old code would have parsed.
+            logger.debug(
+                "sei_parser: mmap unavailable for %s (%s); "
+                "falling back to read()", video_path, e,
+            )
+            f.seek(0)
+            data = f.read()
+            mmap_obj = None
+        else:
+            mmap_obj = data
+
+        # Parse timing information from moov box
+        try:
+            timescale, durations = _get_timescale_and_durations(data)
+        except ValueError as e:
+            logger.warning(
+                "Could not parse MP4 metadata for %s: %s", video_path, e,
+            )
+            # Fall back to default timing (33ms per frame = ~30fps)
+            timescale = 30000
+            durations = []
+        default_duration_ms = 33.33  # ~30fps fallback
+
+        # Find mdat box (contains video data)
+        mdat = _find_box(data, 0, len(data), 'mdat')
+        if mdat is None:
+            raise ValueError(f"No mdat box found in {video_path}")
+
+        # Walk through NAL units in mdat
+        cursor = mdat['start']
+        end = mdat['end']
+        # Apply ``max_walk_bytes`` as a hard cap on the cumulative
+        # cursor advance through ``mdat``. We compute a stop-cursor
+        # once and check it on each loop iteration; this keeps the
+        # hot path branch-free for the unbounded indexer case (where
+        # ``max_walk_bytes is None`` collapses to the original
+        # ``cursor + 4 <= end`` predicate).
+        if max_walk_bytes is not None:
+            walk_stop = mdat['start'] + max(0, int(max_walk_bytes))
+            if walk_stop < end:
+                end = walk_stop
+        frame_index = 0
+        cumulative_time_ms = 0.0
+
+        while cursor + 4 <= end:
+            # Read 4-byte big-endian NAL unit length
+            nal_size = struct.unpack('>I', data[cursor:cursor + 4])[0]
+            cursor += 4
+
+            if nal_size < 1 or cursor + nal_size > len(data):
+                break
+
+            # Extract NAL unit type (lower 5 bits of first byte)
+            nal_type = data[cursor] & 0x1F
+
+            if nal_type == 6:
+                # SEI NAL unit — check if this is a sampled frame
+                if frame_index % sample_rate == 0:
+                    nal_data = data[cursor:cursor + nal_size]
+                    # Quick check: payload type 5 (user data unregistered)
+                    if nal_size >= 2 and nal_data[1] == 5:
+                        sei = _decode_sei_nal(nal_data)
+                        if sei is not None:
+                            # Get frame duration
+                            if frame_index < len(durations):
+                                duration_ms = durations[frame_index]
+                            else:
+                                duration_ms = default_duration_ms
+
+                            yield SeiMessage(
+                                frame_index=frame_index,
+                                timestamp_ms=cumulative_time_ms,
+                                latitude_deg=sei.latitude_deg,
+                                longitude_deg=sei.longitude_deg,
+                                heading_deg=sei.heading_deg,
+                                vehicle_speed_mps=sei.vehicle_speed_mps,
+                                linear_acceleration_x=sei.linear_acceleration_mps2_x,
+                                linear_acceleration_y=sei.linear_acceleration_mps2_y,
+                                linear_acceleration_z=sei.linear_acceleration_mps2_z,
+                                steering_wheel_angle=sei.steering_wheel_angle,
+                                accelerator_pedal_position=sei.accelerator_pedal_position,
+                                brake_applied=sei.brake_applied,
+                                gear_state=_GEAR_NAMES.get(sei.gear_state, 'UNKNOWN'),
+                                autopilot_state=_AUTOPILOT_NAMES.get(
+                                    sei.autopilot_state, 'UNKNOWN'
+                                ),
+                                blinker_on_left=sei.blinker_on_left,
+                                blinker_on_right=sei.blinker_on_right,
+                                frame_seq_no=sei.frame_seq_no,
+                                video_path=video_path,
+                            )
+
+            elif nal_type == 5 or nal_type == 1:
+                # IDR (keyframe) or non-IDR slice — advance frame counter and timing
+                if frame_index < len(durations):
+                    cumulative_time_ms += durations[frame_index]
+                else:
+                    cumulative_time_ms += default_duration_ms
+                frame_index += 1
+
+            cursor += nal_size
+    finally:
+        # Explicit close on every path — including GeneratorExit
+        # raised when the consumer abandons the generator early.
+        if mmap_obj is not None:
+            try:
+                mmap_obj.close()
+            except (BufferError, ValueError):
+                # BufferError: a previously-yielded slice still has a
+                # live memoryview holding the mapping (uncommon — our
+                # yields produce ``bytes``, not memoryviews, so any
+                # references are decoupled). Safe to ignore — the
+                # mapping is released when the file descriptor closes.
+                pass
+        try:
+            f.close()
+        except OSError:
+            pass
+
+
+def parse_video_sei(
+    video_path: str,
+    sample_rate: int = 1
+) -> List[SeiMessage]:
+    """Parse all SEI messages from a video file into a list.
+
+    Convenience wrapper around extract_sei_messages() for when you need
+    all messages at once. For large-scale indexing, prefer the generator.
+
+    Args:
+        video_path: Path to the MP4 file.
+        sample_rate: Only process every Nth frame (1=all, 30=~1/sec at 30fps).
+
+    Returns:
+        List of SeiMessage objects.
+    """
+    return list(extract_sei_messages(video_path, sample_rate))
