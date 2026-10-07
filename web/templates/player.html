@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block content %}
+<a href="{{ url_for('videos.index') }}" class="muted" style="text-decoration:none">← {{ _('back') }}</a>
+
+<div class="player" style="margin-top:10px">
+  <span class="camlabel" id="cam-label">{{ _('camera_front') }}</span>
+  <video id="real-video" style="position:absolute;inset:0;width:100%;height:100%;display:none" controls preload="none"
+         src="{{ url_for('videos.stream', folder=video.folder, name=video.name) }}"></video>
+  <button class="bigplay" id="bigplay" aria-label="play"></button>
+</div>
+
+<div class="camgrid">
+  {% for key in ['left_repeater', 'front', 'right_repeater', 'left_pillar', 'back', 'right_pillar'] %}
+  <button type="button" data-label="{{ _('camera_' + key) }}" class="{{ 'on' if key == 'front' }}">{{ _('camera_' + key) }}</button>
+  {% endfor %}
+</div>
+
+<div class="card">
+  <div class="hud">
+    <span>{{ _('hud_speed') }}: {{ _('speed_kmh', v=62) }}</span>
+    <span>{{ _('hud_gear') }}: D</span>
+    <span>{{ _('hud_steering') }}: -12°</span>
+  </div>
+  <div class="muted">{{ _('no_gps_note') }}</div>
+  <div class="muted" style="margin-top:6px">{{ video.time }} · {{ video.folder }}</div>
+</div>
+
+<div class="card">
+  <input type="range" min="0" max="60" value="0" aria-label="timeline">
+  <div class="row" style="margin-top:10px">
+    <a class="btn ghost small" href="{{ url_for('videos.stream', folder=video.folder, name=video.name) }}" download>{{ _('download') }}</a>
+    <form method="post" action="{{ url_for('videos.toggle_favorite') }}" style="display:inline">
+      <input type="hidden" name="name" value="{{ video.name }}">
+      <input type="hidden" name="folder" value="{{ video.folder }}">
+      <input type="hidden" name="next" value="{{ request.full_path }}">
+      <button class="btn ghost small" type="submit">{{ _('unfavorite') if video.favorite else _('favorite') }}</button>
+    </form>
+    <form method="post" action="{{ url_for('videos.delete_videos') }}" style="display:inline"
+          data-confirm="{{ _('delete_confirm_multi') }}">
+      <input type="hidden" name="names" value="{{ video.folder }}:{{ video.name }}">
+      <button class="btn danger small" type="submit">{{ _('delete') }}</button>
+    </form>
+  </div>
+</div>
+<script>
+// 有真实视频流时显示 video 元素
+var v = document.getElementById('real-video');
+v.addEventListener('error', function(){ v.style.display = 'none'; }, true);
+</script>
+{% endblock %}

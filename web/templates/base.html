@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>{{ _('app_name') }}</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+<div class="topbar">
+  <h1>{{ _('app_name') }}<span class="dot" id="online-dot"></span></h1>
+</div>
+<div class="page">
+  {% with messages = get_flashed_messages() %}
+  {% if messages %}
+    {% for m in messages %}<div class="flash">{{ m }}</div>{% endfor %}
+  {% endif %}
+  {% endwith %}
+  {% block content %}{% endblock %}
+</div>
+<nav class="tabbar">
+  <a href="{{ url_for('home.index') }}" class="{{ 'on' if active_tab=='home' }}"><span class="ic">⌂</span>{{ _('tab_home') }}</a>
+  <a href="{{ url_for('videos.index') }}" class="{{ 'on' if active_tab=='videos' }}"><span class="ic">▷</span>{{ _('tab_videos') }}</a>
+  <a href="{{ url_for('chimes.index') }}" class="{{ 'on' if active_tab=='chimes' }}"><span class="ic">♪</span>{{ _('tab_chimes') }}</a>
+  <a href="{{ url_for('lightshows.index') }}" class="{{ 'on' if active_tab=='lightshows' }}"><span class="ic">✦</span>{{ _('tab_lightshows') }}</a>
+  <a href="{{ url_for('settings.index') }}" class="{{ 'on' if active_tab=='settings' }}"><span class="ic">⚙</span>{{ _('tab_settings') }}</a>
+</nav>
+<div id="toast"></div>
+<div id="confirm-mask">
+  <div id="confirm-box">
+    <p id="confirm-msg"></p>
+    <div class="row">
+      <button class="btn ghost small" id="confirm-cancel">{{ _('cancel') }}</button>
+      <button class="btn small" id="confirm-ok" style="margin-left:8px">{{ _('confirm') }}</button>
+    </div>
+  </div>
+</div>
+<script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>

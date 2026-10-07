@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <div class="row">
+    <div><h2 style="margin:0">{{ _('device_status') }}</h2>
+      <div class="muted">{{ _('mode_usb') if status.mode == 'present' else _('mode_edit') }}</div>
+    </div>
+    <form method="post" action="{{ url_for('home.switch_mode') }}"
+          data-confirm="{{ _('mode_switch_confirm_edit') if status.mode == 'present' else _('mode_switch_confirm_usb') }}">
+      <input type="hidden" name="target" value="{{ 'edit' if status.mode == 'present' else 'present' }}">
+      <button class="btn small" type="submit">{{ _('switch_to_edit') if status.mode == 'present' else _('switch_to_usb') }}</button>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <h2>{{ _('storage') }}</h2>
+  {% set tc = storage.teslacam %}
+  <div class="row"><span>{{ _('partition_teslacam') }}</span>
+    <span class="muted">{{ _('used_of_total', used=tc.used_gb, total=tc.total_gb) }}G</span></div>
+  <div class="bar"><i style="width:{{ (tc.used_gb / tc.total_gb * 100) | round(1) }}%"></i></div>
+  {% set ls = storage.lightshow %}
+  <div class="row" style="margin-top:10px"><span>{{ _('partition_lightshow') }}</span>
+    <span class="muted">{{ _('used_of_total', used=ls.used_gb, total=ls.total_gb) }}G</span></div>
+  <div class="bar green"><i style="width:{{ (ls.used_gb / ls.total_gb * 100) | round(1) }}%"></i></div>
+</div>
+
+<div class="card">
+  <h2>{{ _('video_overview') }}</h2>
+  {% for key, cn in [('RecentClips', _('folder_recent_cn')), ('SavedClips', _('folder_saved_cn')), ('SentryClips', _('folder_sentry_cn'))] %}
+  {% set st = folder_stats.get(key, {}) %}
+  <a class="listrow" style="text-decoration:none;color:inherit"
+     href="{{ url_for('videos.index', folder=key) }}">
+    <div class="grow"><div>{{ key }}</div><div class="muted">{{ cn }}</div></div>
+    <span class="muted">{{ _('videos_count_size', count=st.get('count', 0), size=st.get('size_gb', 0)) }}G</span>
+  </a>
+  {% endfor %}
+  <div class="row" style="margin-top:12px">
+    <strong>{{ _('est_recording_time', hours=estimate.hours) }}</strong>
+  </div>
+  <div class="muted">{{ _('est_recording_method') }}</div>
+</div>
+
+<div class="card">
+  <h2>{{ _('system_status') }}</h2>
+  <div class="listrow"><span class="muted">{{ _('cpu_temp') }}</span><span>{{ status.temp_c }}°C</span></div>
+  <div class="listrow"><span class="muted">WiFi</span>
+    <span>{{ _('wifi_connected', ssid=status.wifi.ssid) if status.wifi.ssid else _('wifi_disconnected') }}</span></div>
+  <div class="listrow"><span class="muted">{{ _('version') }}</span><span>{{ status.version }}</span></div>
+</div>
+{% endblock %}

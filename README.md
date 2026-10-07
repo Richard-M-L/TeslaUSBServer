@@ -27,6 +27,16 @@ sudo bash setup.sh --china-mirror
 
 详细文档见 `docs/`。
 
+## Web 开发依赖
+
+```bash
+pip install flask pyyaml pytest
+```
+
+- `web/config.py` 优先用 PyYAML 解析 `config.yaml`；未安装时自动降级为内置最小解析器（支持本配置的子集）。
+- Web 服务层切换：默认使用 `web/blueprints/_mock.py` 演示数据；`web/services/`（Workstream C）就绪后，设置环境变量 `TESLAUSB_CN_USE_REAL_SERVICES=1` 启用真实服务。
+- 启动：`python -m web.app`（或 `flask --app web.app:create_app run`），默认 5000 端口。
+
 ## 项目状态
 
 Phase 1 开发中（骨架阶段）。规划书见 `docs/PROJECT_PLAN.md`（或仓库附件）。

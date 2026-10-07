@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block content %}
+{% for s in shows %}
+<div class="card">
+  <div class="row">
+    <div><strong>{{ s.name }}</strong>
+      <div style="margin-top:4px"><span class="tag">{{ _('badge_fseq_mp3') }}</span></div></div>
+    <div>
+      <button class="btn ghost small" type="button" onclick="_toast('♪')">{{ _('chime_listen') }}</button>
+      <form method="post" action="{{ url_for('lightshows.delete') }}" style="display:inline"
+            data-confirm="{{ _('show_delete_confirm') }}">
+        <input type="hidden" name="name" value="{{ s.name }}">
+        <button class="btn danger small" type="submit">{{ _('delete') }}</button>
+      </form>
+    </div>
+  </div>
+</div>
+{% else %}
+<div class="card muted">{{ _('show_empty') }}</div>
+{% endfor %}
+
+<div class="card">
+  <h2>{{ _('show_upload') }}</h2>
+  <form method="post" action="{{ url_for('lightshows.upload') }}" enctype="multipart/form-data" data-upload>
+    <div class="uploadbox" id="show-drop">{{ _('show_upload_hint') }}</div>
+    <input type="file" name="fseq" accept=".fseq" id="fseq-in" style="display:none">
+    <input type="file" name="mp3" accept=".mp3" id="mp3-in" style="display:none">
+    <button class="btn" type="submit">{{ _('upload') }}</button>
+  </form>
+</div>
+<script>
+document.getElementById('show-drop').addEventListener('click', function(){
+  document.getElementById('fseq-in').click();
+  setTimeout(function(){ document.getElementById('mp3-in').click(); }, 300);
+});
+</script>
+{% endblock %}

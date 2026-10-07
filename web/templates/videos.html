@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="chips">
+  <a class="chip {{ 'on' if not folder and not favorite_only }}" href="{{ url_for('videos.index') }}">{{ _('filter_all') }}</a>
+  {% for f in folders %}
+  <a class="chip {{ 'on' if folder == f }}" href="{{ url_for('videos.index', folder=f) }}">{{ f }}<small>{{ {'RecentClips': _('folder_recent_cn'), 'SavedClips': _('folder_saved_cn'), 'SentryClips': _('folder_sentry_cn')}[f] }}</small></a>
+  {% endfor %}
+  <a class="chip {{ 'on' if favorite_only }}" href="{{ url_for('videos.index', fav='1') }}">{{ _('filter_favorite') }}</a>
+</div>
+
+{% if groups %}
+{% for day, items in groups.items() %}
+<div class="dayhead">{{ day }}</div>
+{% for v in items %}
+<div style="position:relative">
+  <input type="checkbox" class="vcheck check" value="{{ v.name }}" data-folder="{{ v.folder }}"
+         style="position:absolute;left:14px;top:14px;z-index:2">
+  <a class="vcard" style="padding-left:44px"
+     href="{{ url_for('videos.player', name=v.name, folder=v.folder) }}">
+    <div class="thumb"></div>
+    <div>
+      <div>{{ v.time }}</div>
+      <div class="muted">{{ v.folder }} · {{ v.size_mb }}MB</div>
+      <div style="margin-top:4px">
+        {% if v.folder == 'SentryClips' %}<span class="tag red">{{ _('folder_sentry_cn') }}</span>
+        {% elif v.folder == 'SavedClips' %}<span class="tag">{{ _('folder_saved_cn') }}</span>
+        {% else %}<span class="tag">{{ _('folder_recent_cn') }}</span>{% endif %}
+        {% if v.favorite %}<span class="tag fav">{{ _('filter_favorite') }}</span>{% endif %}
+      </div>
+    </div>
+  </a>
+</div>
+{% endfor %}
+{% endfor %}
+{% else %}
+<div class="card muted">{{ _('no_videos') }}</div>
+{% endif %}
+
+<div class="toolbar" id="sel-toolbar">
+  <span class="muted">{{ _('selected_n', n='<b id="sel-count">0</b>') | safe }}</span>
+  <span class="spacer"></span>
+  <form method="post" action="{{ url_for('videos.toggle_favorite') }}" style="display:inline">
+    <input type="hidden" name="names" id="sel-names-2" value="">
+    <input type="hidden" name="folder" value="{{ folder or '' }}">
+    <input type="hidden" name="next" value="{{ request.full_path }}">
+    <button class="btn ghost small" type="submit">{{ _('favorite') }}</button>
+  </form>
+  <form method="post" action="{{ url_for('videos.delete_videos') }}" style="display:inline"
+        data-confirm="{{ _('delete_confirm_multi') }}">
+    <input type="hidden" name="names" id="sel-names" value="">
+    <input type="hidden" name="folder" value="{{ folder or '' }}">
+    <button class="btn danger small" type="submit">{{ _('delete') }}</button>
+  </form>
+  <button class="btn ghost small" id="sel-clear" type="button">✕ {{ _('deselect_all') }}</button>
+</div>
+{% endblock %}

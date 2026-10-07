@@ -1,0 +1,166 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2>{{ _('chime_active') }}</h2>
+  {% if active %}
+  <div class="row">
+    <div class="ellipsis"><strong>{{ active.name }}</strong><div class="muted">{{ active.duration_s }}s</div></div>
+    <button class="btn ghost small" type="button" onclick="_toast('♪')">{{ _('chime_listen') }}</button>
+  </div>
+  {% endif %}
+</div>
+
+<details>
+  <summary>{{ _('chime_upload') }}</summary>
+  <div class="body">
+    <form method="post" action="{{ url_for('chimes.upload') }}" enctype="multipart/form-data" data-upload>
+      <div class="uploadbox" onclick="this.nextElementSibling.click()">{{ _('chime_upload_hint') }}</div>
+      <input type="file" name="file" accept=".wav" style="display:none" onchange="this.form.submit()">
+      <label class="row" style="margin-top:8px"><span>{{ _('chime_normalize') }}</span>
+        <label class="switch"><input type="checkbox" name="normalize" checked><i></i></label></label>
+    </form>
+  </div>
+</details>
+
+<details open>
+  <summary>{{ _('schedule_title') }} ({{ schedules | length }})</summary>
+  <div class="body">
+    {% for s in schedules %}
+    <div class="listrow">
+      <div class="grow"><div><strong>{{ s.name }}</strong></div>
+        <div class="muted">{{ {'weekly': _('schedule_type_weekly'), 'date': _('schedule_type_date'), 'holiday': _('schedule_type_holiday'), 'recurring': _('schedule_type_recurring')}[s.type] }}
+        · {{ s.chime }} · {{ (s.days or []) | join('、') }}{{ s.date }}{{ s.holiday }}</div></div>
+      <form method="post" action="{{ url_for('chimes.toggle_schedule', sid=s.id) }}" style="display:inline">
+        <label class="switch"><input type="checkbox" {{ 'checked' if s.enabled }} onchange="this.form.submit()"><i></i></label>
+      </form>
+      <button class="btn ghost small" type="button"
+              onclick="document.getElementById('sched-form-{{ s.id }}').style.display='block'">{{ _('edit') }}</button>
+      <form method="post" action="{{ url_for('chimes.delete_schedule', sid=s.id) }}" style="display:inline"
+            data-confirm="{{ _('schedule_delete_confirm') }}">
+        <button class="btn danger small" type="submit">{{ _('delete') }}</button>
+      </form>
+    </div>
+    <div id="sched-form-{{ s.id }}" style="display:none" class="card">
+      <form method="post" action="{{ url_for('chimes.update_schedule', sid=s.id) }}">
+        <input name="name" value="{{ s.name }}" placeholder="{{ _('schedule_name_ph') }}" required>
+        <div>
+          {% for t in schedule_types %}
+          <label style="margin-right:10px"><input type="radio" name="type" value="{{ t }}" class="sched-type" {{ 'checked' if s.type == t }}>{{ {'weekly': _('schedule_type_weekly'), 'date': _('schedule_type_date'), 'holiday': _('schedule_type_holiday'), 'recurring': _('schedule_type_recurring')}[t] }}</label>
+          {% endfor %}
+        </div>
+        <select name="chime" style="width:100%;background:var(--card2);border:1px solid var(--border);color:var(--text);border-radius:10px;padding:10px;margin:6px 0">
+          {% for c in chimes %}<option value="{{ c.name }}" {{ 'selected' if c.name == s.chime }}>{{ c.name }}</option>{% endfor %}
+        </select>
+        <div class="fld-weekly muted">{{ _('schedule_days') }}：
+          {% for d in ['一','二','三','四','五','六','日'] %}
+          <label style="margin-right:8px"><input type="checkbox" name="days" value="{{ d }}" {{ 'checked' if d in (s.days or []) }}>{{ d }}</label>
+          {% endfor %}
+        </div>
+        <div class="fld-date"><input type="date" name="date" value="{{ s.date or '' }}"></div>
+        <div class="fld-holiday"><input name="holiday" value="{{ s.holiday or '' }}" placeholder="{{ _('schedule_holiday') }}"></div>
+        <label class="row" style="margin-top:8px"><span>{{ _('schedule_enable_now') }}</span>
+          <label class="switch"><input type="checkbox" name="enabled" {{ 'checked' if s.enabled }}><i></i></label></label>
+        <button class="btn small" type="submit" style="margin-top:8px">{{ _('save') }}</button>
+      </form>
+    </div>
+    {% else %}
+    <div class="muted">{{ _('schedule_empty') }}</div>
+    {% endfor %}
+    <button class="btn ghost small" type="button" style="margin-top:8px"
+            onclick="document.getElementById('sched-new').style.display='block'">{{ _('schedule_new') }}</button>
+    <div id="sched-new" style="display:none" class="card">
+      <form method="post" action="{{ url_for('chimes.create_schedule') }}">
+        <input name="name" placeholder="{{ _('schedule_name_ph') }}" required>
+        <div>
+          {% for t in schedule_types %}
+          <label style="margin-right:10px"><input type="radio" name="type" value="{{ t }}" class="sched-type" {{ 'checked' if t == 'weekly' }}>{{ {'weekly': _('schedule_type_weekly'), 'date': _('schedule_type_date'), 'holiday': _('schedule_type_holiday'), 'recurring': _('schedule_type_recurring')}[t] }}</label>
+          {% endfor %}
+        </div>
+        <select name="chime" style="width:100%;background:var(--card2);border:1px solid var(--border);color:var(--text);border-radius:10px;padding:10px;margin:6px 0">
+          {% for c in chimes %}<option value="{{ c.name }}">{{ c.name }}</option>{% endfor %}
+        </select>
+        <div class="fld-weekly muted">{{ _('schedule_days') }}：
+          {% for d in ['一','二','三','四','五','六','日'] %}
+          <label style="margin-right:8px"><input type="checkbox" name="days" value="{{ d }}">{{ d }}</label>
+          {% endfor %}
+        </div>
+        <div class="fld-date" style="display:none"><input type="date" name="date"></div>
+        <div class="fld-holiday" style="display:none"><input name="holiday" placeholder="{{ _('schedule_holiday') }}"></div>
+        <label class="row" style="margin-top:8px"><span>{{ _('schedule_enable_now') }}</span>
+          <label class="switch"><input type="checkbox" name="enabled" checked><i></i></label></label>
+        <button class="btn small" type="submit" style="margin-top:8px">{{ _('save') }}</button>
+      </form>
+    </div>
+  </div>
+</details>
+
+<details>
+  <summary>{{ _('group_title') }} ({{ groups | length }})</summary>
+  <div class="body">
+    <form method="post" action="{{ url_for('chimes.set_random_mode') }}" class="row" style="margin-bottom:10px">
+      <div><strong>{{ _('random_mode') }}</strong><div class="muted">{{ _('random_mode_desc') }}</div></div>
+      <label class="switch"><input type="checkbox" name="enabled" {{ 'checked' if random_mode.enabled }} onchange="this.form.submit()"><i></i></label>
+    </form>
+    <div class="muted" style="margin-bottom:8px">{{ _('random_mode_source') }}：
+      {% for g in groups %}
+      <form method="post" action="{{ url_for('chimes.set_random_source', gid=g.id) }}" style="display:inline">
+        <button class="btn {{ '' if random_mode.source_group_id == g.id else 'ghost' }} small" type="submit">{{ g.name }}</button>
+      </form>
+      {% endfor %}
+    </div>
+    {% for g in groups %}
+    <div class="card" style="margin-bottom:8px">
+      <div class="row"><strong>{{ g.name }}</strong>
+        {% if random_mode.source_group_id == g.id %}<span class="tag red">{{ _('group_is_source') }}</span>{% endif %}
+      </div>
+      <div class="muted">{{ _('group_members', n=g.chimes | length) }}：{{ g.chimes | join('、') }}</div>
+      <div class="row" style="margin-top:8px">
+        <form method="post" action="{{ url_for('chimes.add_to_group', gid=g.id) }}" style="display:inline">
+          <select name="chime" style="width:auto;display:inline-block">
+            {% for c in chimes %}<option value="{{ c.name }}">{{ c.name }}</option>{% endfor %}
+          </select>
+          <button class="btn ghost small" type="submit">{{ _('group_add_chime') }}</button>
+        </form>
+        <form method="post" action="{{ url_for('chimes.delete_group', gid=g.id) }}" style="display:inline"
+              data-confirm="{{ _('group_delete_confirm') }}">
+          <button class="btn danger small" type="submit">{{ _('group_delete') }}</button>
+        </form>
+      </div>
+      {% for c in g.chimes %}
+      <form method="post" action="{{ url_for('chimes.remove_from_group', gid=g.id) }}" class="row" style="margin-top:4px">
+        <span class="muted">{{ c }}</span>
+        <input type="hidden" name="chime" value="{{ c }}">
+        <button class="btn ghost small" type="submit">{{ _('group_remove') }}</button>
+      </form>
+      {% endfor %}
+    </div>
+    {% endfor %}
+    <form method="post" action="{{ url_for('chimes.create_group') }}" class="row">
+      <input name="name" placeholder="{{ _('group_name_ph') }}" required style="margin:0">
+      <button class="btn ghost small" type="submit">{{ _('group_new') }}</button>
+    </form>
+  </div>
+</details>
+
+<div class="card">
+  <h2>{{ _('chime_library') }}</h2>
+  {% for c in chimes %}
+  <div class="listrow">
+    <div class="grow ellipsis"><strong>{{ c.name }}</strong>
+      <div class="muted">{{ c.duration_s }}s {% if c.is_active %}· {{ _('chime_active') }}{% endif %}</div></div>
+    <button class="btn ghost small" type="button" onclick="_toast('♪')">{{ _('chime_listen') }}</button>
+    {% if not c.is_active %}
+    <form method="post" action="{{ url_for('chimes.set_active') }}" style="display:inline">
+      <input type="hidden" name="name" value="{{ c.name }}">
+      <button class="btn ghost small" type="submit">{{ _('chime_set_active') }}</button>
+    </form>
+    <form method="post" action="{{ url_for('chimes.delete') }}" style="display:inline"
+          data-confirm="{{ _('chime_delete_confirm') }}">
+      <input type="hidden" name="name" value="{{ c.name }}">
+      <button class="btn danger small" type="submit">{{ _('delete') }}</button>
+    </form>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% endblock %}

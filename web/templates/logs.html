@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block content %}
+<a href="{{ url_for('settings.index') }}" class="muted" style="text-decoration:none">← {{ _('back') }}</a>
+<div class="card" style="margin-top:10px">
+  <h2>{{ _('settings_logs') }}</h2>
+  <div class="chips">
+    {% for lv in ['all', 'info', 'warning', 'error'] %}
+    <a class="chip {{ 'on' if level == lv }}" href="{{ url_for('settings.logs', level=lv) }}">{{ {'all': _('log_all'), 'info': _('log_info'), 'warning': _('log_warning'), 'error': _('log_error')}[lv] }}</a>
+    {% endfor %}
+  </div>
+  {% for e in entries %}
+  <div class="logline"><time>{{ e.time }}</time><span class="lv {{ e.level }}">{{ {'info': _('log_info'), 'warning': _('log_warning'), 'error': _('log_error')}[e.level] }}</span><span>{{ e.msg }}</span></div>
+  {% else %}
+  <div class="muted">{{ _('log_empty') }}</div>
+  {% endfor %}
+  <div class="row" style="margin-top:12px">
+    <a class="btn ghost small" href="{{ url_for('settings.logs_download') }}">{{ _('log_download') }}</a>
+    <form method="post" action="{{ url_for('settings.logs_clear') }}" style="display:inline"
+          data-confirm="{{ _('log_clear_confirm') }}">
+      <button class="btn danger small" type="submit">{{ _('log_clear') }}</button>
+    </form>
+  </div>
+</div>
+{% endblock %}

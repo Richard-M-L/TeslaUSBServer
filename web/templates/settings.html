@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2>{{ _('settings_wifi') }}</h2>
+  <div class="row">
+    <div><strong>{{ wifi_status.ssid or '—' }}</strong>
+      <div class="muted">{{ _('wifi_signal', v=wifi_status.signal) if wifi_status.ssid else _('wifi_disconnected') }}</div></div>
+    <span class="tag {{ '' if wifi_status.ssid else 'red' }}">{{ _('online') if wifi_status.ssid else _('offline') }}</span>
+  </div>
+  <h3>{{ _('wifi_available') }}</h3>
+  {% for n in networks %}
+  <div class="listrow">
+    <div class="grow"><div>{{ n.ssid }}</div><div class="muted">{{ _('wifi_signal', v=n.signal) }}</div></div>
+    {% if n.ssid == wifi_status.ssid %}<span class="tag">{{ _('online') }}</span>
+    {% else %}
+    <button class="btn ghost small" type="button"
+            onclick="var p=prompt('{{ _('wifi_password') }}: {{ n.ssid }}');if(p!==null){var f=document.createElement('form');f.method='post';f.action='{{ url_for('settings.wifi_connect') }}';f.innerHTML='<input type=hidden name=ssid value=&quot;{{ n.ssid }}&quot;><input type=hidden name=password>';f.querySelector('[name=password]').value=p;document.body.appendChild(f);f.submit();}">{{ _('wifi_connect') }}</button>
+    {% endif %}
+  </div>
+  {% endfor %}
+  <details>
+    <summary>{{ _('wifi_saved') }}</summary>
+    <div class="body">
+      {% for n in saved %}
+      <form method="post" action="{{ url_for('settings.wifi_forget') }}" class="row"
+            data-confirm="{{ _('wifi_forget_confirm') }}">
+        <span>{{ n.ssid }}</span>
+        <input type="hidden" name="ssid" value="{{ n.ssid }}">
+        <button class="btn danger small" type="submit">{{ _('wifi_forget') }}</button>
+      </form>
+      {% endfor %}
+    </div>
+  </details>
+  <form method="post" action="{{ url_for('settings.wifi_ap') }}" class="row" style="margin-top:8px">
+    <div><strong>{{ _('wifi_ap_mode') }}</strong><div class="muted">{{ _('wifi_ap_desc') }}</div></div>
+    <label class="switch"><input type="checkbox" name="enabled" {{ 'checked' if wifi_status.mode == 'ap' }} onchange="this.form.submit()"><i></i></label>
+  </form>
+  <form method="post" action="{{ url_for('settings.wifi_ap_config') }}" class="row" style="margin-top:8px">
+    <input name="ssid" value="{{ ap_config.ssid }}" placeholder="{{ _('wifi_ap_ssid') }}" style="margin:0">
+    <input name="password" value="{{ ap_config.password }}" placeholder="{{ _('wifi_ap_password') }}" style="margin:0">
+    <button class="btn ghost small" type="submit">{{ _('save') }}</button>
+  </form>
+  <div class="muted" style="margin-top:8px">{{ _('wifi_nas_hint') }}</div>
+</div>
+
+<div class="card">
+  <h2>{{ _('settings_mirror') }}</h2>
+  <form method="post" action="{{ url_for('settings.set_mirror') }}">
+    {% for m in mirrors %}
+    <label class="row" style="padding:6px 0"><span>{{ {'tsinghua': _('mirror_tsinghua'), 'ustc': _('mirror_ustc'), 'aliyun': _('mirror_aliyun')}[m] }}</span>
+      <input type="radio" name="mirror" value="{{ m }}" {{ 'checked' if mirror == m }} onchange="this.form.submit()"></label>
+    {% endfor %}
+  </form>
+</div>
+
+<div class="card">
+  <h2>{{ _('settings_backup') }}</h2>
+  <form method="post" action="{{ url_for('settings.nas_save') }}">
+    <div class="row">
+      <select name="protocol" style="width:32%">
+        {% for p in ['smb','nfs','sftp','webdav'] %}<option value="{{ p }}" {{ 'selected' if p == 'smb' }}>{{ p.upper() }}</option>{% endfor %}
+      </select>
+      <input name="host" placeholder="{{ _('nas_host') }}" style="margin:0">
+      <input name="port" value="445" placeholder="{{ _('nas_port') }}" style="width:80px;margin:0">
+    </div>
+    <div class="row">
+      <input name="username" placeholder="{{ _('nas_username') }}" style="margin:0">
+      <input name="password" type="password" placeholder="{{ _('nas_password') }}" style="margin:0">
+    </div>
+    <label class="row" style="margin-top:8px"><span>{{ _('nas_delete_after') }}</span>
+      <label class="switch"><input type="checkbox" name="delete_after_backup" id="dab"></label></label>
+    <div class="warnbox" id="dab-warn" style="display:none">{{ _('nas_delete_after_confirm') }}</div>
+    <button class="btn small" type="submit" style="margin-top:8px">{{ _('nas_save') }}</button>
+  </form>
+  <div class="row" style="margin-top:10px">
+    <button class="btn small" type="button" id="backup-btn"
+            data-job-start="{{ url_for('settings.backup_start') }}"
+            data-progress-wrap="backup-progress"
+            data-done-toast="{{ _('backup_done') }}"
+            data-cancel-toast="{{ _('backup_cancelled') }}">{{ _('nas_backup_now') }}</button>
+    <span class="muted">{{ _('nas_last_backup', time=history[0].time) if history else _('nas_never_backup') }}</span>
+  </div>
+  <div class="progress" id="backup-progress" style="display:none">
+    <div class="bar"><i style="width:0%"></i></div>
+    <div class="lbl"></div>
+    <button class="btn ghost small" type="button" data-job-cancel>{{ _('progress_cancel') }}</button>
+  </div>
+</div>
+
+<div class="card">
+  <h2>{{ _('settings_cleanup') }}</h2>
+  <form method="post" action="{{ url_for('settings.cleanup_save') }}">
+    {% for key, cn in [('recentclips_retention_days', _('folder_recent_cn')), ('savedclips_retention_days', _('folder_saved_cn')), ('sentryclips_retention_days', _('folder_sentry_cn'))] %}
+    <div class="row"><span>{{ {'recentclips_retention_days': 'RecentClips', 'savedclips_retention_days': 'SavedClips', 'sentryclips_retention_days': 'SentryClips'}[key] }}（{{ cn }}）</span>
+      <select name="{{ key }}" style="width:130px">
+        {% for d in [0, 7, 14, 30] %}
+        <option value="{{ d }}" {{ 'selected' if retention.get(key) == d }}>{{ _('cleanup_never') if d == 0 else _('cleanup_retention_days', n=d) }}</option>
+        {% endfor %}
+      </select></div>
+    {% endfor %}
+    <label class="row" style="margin-top:8px"><span>{{ _('cleanup_boot') }}</span>
+      <label class="switch"><input type="checkbox" name="run_on_boot" {{ 'checked' if retention.get('run_on_boot') }}><i></i></label></label>
+    <div class="muted" style="margin:8px 0">{{ _('cleanup_protect_hour') }}</div>
+    <button class="btn ghost small" type="submit">{{ _('save') }}</button>
+    <button class="btn ghost small" type="button" id="cleanup-preview-btn"
+            data-tpl="{{ _('cleanup_preview_result', files='{files}', size='{size}') }}">{{ _('cleanup_preview') }}</button>
+    <div class="muted" id="cleanup-preview-result" style="margin-top:6px"></div>
+  </form>
+  <div class="row" style="margin-top:10px">
+    <button class="btn danger small" type="button" id="cleanup-run-btn"
+            data-job-start="{{ url_for('settings.cleanup_run') }}"
+            data-progress-wrap="cleanup-progress"
+            data-done-toast="{{ _('cleanup_done') }}"
+            data-cancel-toast="{{ _('cleanup_cancelled') }}">{{ _('cleanup_run') }}</button>
+  </div>
+  <div class="progress" id="cleanup-progress" style="display:none">
+    <div class="bar"><i style="width:0%"></i></div>
+    <div class="lbl"></div>
+    <button class="btn ghost small" type="button" data-job-cancel>{{ _('progress_cancel') }}</button>
+  </div>
+</div>
+
+<div class="card">
+  <h2>{{ _('settings_timezone') }}</h2>
+  <div class="row"><span class="muted">TeslaCam</span><span>{{ timezone }}</span></div>
+</div>
+
+<div class="card">
+  <h2>{{ _('settings_about') }}</h2>
+  <a class="listrow" style="text-decoration:none;color:inherit" href="{{ url_for('settings.logs') }}">
+    <div class="grow">{{ _('settings_logs') }}</div><span class="muted">→</span>
+  </a>
+  <div class="listrow"><span class="muted">{{ _('about_version') }}</span><span>{{ version }}</span></div>
+  <div class="listrow"><span class="muted">{{ _('about_repo') }}</span><span class="muted">Richard-M-L/TeslaUSB-CN</span></div>
+</div>
+<script>
+document.getElementById('dab').addEventListener('change', function(){
+  var w = document.getElementById('dab-warn');
+  if (this.checked && !w.dataset.shown) {
+    if (!window.confirm(w.textContent)) { this.checked = false; return; }
+    w.dataset.shown = "1";
+  }
+  w.style.display = this.checked ? "" : "none";
+});
+</script>
+{% endblock %}
